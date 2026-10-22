@@ -305,4 +305,27 @@ inline void dequantize_bf16(const uint8_t* p, float* out, int n) {
     for (int i = 0; i < n; ++i) out[i] = bf16_to_fp32(read_u16(p + 2 * i));
 }
 
+// ---- MXFP4: 32 elements from a 17-byte block: `hs[16]` (two e2m1 nibbles per byte, low nibble first,
+// as in Q4_0) then `ds` (an e8m0 scale: 2^(ds-127)). Mirrors ggml's block_mxfp4 (hs before ds) and
+// ggml_from_mxfp4. The e2m1 codes: 0=0, 1=.5, 2=1, 3=1.5, 4=2, 5=3, 6=4, 7=6, bit 3 the sign.
+// This is the encoding DeepSeek-V4-Flash's experts ship in (docs/DEEPSEEK_V4_PLAN.md).
+inline float mxfp4_e2m1(uint8_t code) {
+    static const float k[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    const float v = k[code & 7];
+    return (code & 8) ? -v : v;
+}
+inline float mxfp4_e8m0(uint8_t ds) {   // 2^(ds - 127), exact for every byte value
+    const uint32_t bits = (uint32_t) ds << 23;
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+inline void dequantize_mxfp4(const uint8_t* block, float* out) {
+    const float d = mxfp4_e8m0(block[16]);
+    for (int j = 0; j < 16; ++j) {
+        out[j + 0]  = mxfp4_e2m1(block[j] & 0x0F) * d;
+        out[j + 16] = mxfp4_e2m1(block[j] >> 4) * d;
+    }
+}
+
 } // namespace strata

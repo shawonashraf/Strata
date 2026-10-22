@@ -112,8 +112,47 @@ int main(int argc, char** argv) {
             std::printf("\n");
             if (t.type == 23) break; // emit Q5_0 first, then IQ4_NL
         }
-        std::printf("%s\n  Q2_0 tensors spot-checked: %d\n  symbolic invariant violations: %d -> %s\n",
-                    argv[1], checked, bad, bad ? "FAIL" : "PASS");
+        // MXFP4 (type 39): the encoding DeepSeek-V4-Flash's experts ship in. Same two-implementation rule:
+        // a checksum over the first 64 blocks of the first two MXFP4 tensors, cross-checked against an
+        // independent Python dequantizer over identical bytes, and the structural invariant that every
+        // value is exactly (e2m1 grid value) x (an exact power of two).
+        int mxfp4_checked = 0;
+        for (const auto& t : g.tensors()) {
+            if (t.type != 39) continue;
+            const uint8_t* base = g.tensor_data(t);
+            const uint64_t nb = t.elements() / 32;
+            double sum = 0, sumabs = 0;
+            for (uint64_t b = 0; b < nb && b < 64; ++b) {
+                const uint8_t* blk = base + b * 17;
+                float out[32];
+                strata::dequantize_mxfp4(blk, out);
+                const float d = strata::mxfp4_e8m0(blk[16]);
+                for (int j = 0; j < 32; ++j) {
+                    const float v = out[j];
+                    bool ok = (v == 0.0f);
+                    for (const float k : {0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f})
+                        if (v == k * d || v == -k * d) ok = true;
+                    if (!ok) {
+                        ++bad;
+                        if (bad < 4)
+                            std::printf("  VIOLATION %s block %llu elem %d: v=%g d=%g\n", t.name.c_str(),
+                                        (unsigned long long) b, j, v, d);
+                    }
+                    sum += v;
+                    sumabs += std::fabs(v);
+                }
+            }
+            float f8[32];
+            strata::dequantize_mxfp4(base, f8);
+            std::printf("  CHECKSUM MXFP4 %s sum=%.10g sumabs=%.10g\n  REF first8:", t.name.c_str(), sum,
+                        sumabs);
+            for (int j = 0; j < 8; ++j) std::printf(" %.6g", f8[j]);
+            std::printf("\n");
+            if (++mxfp4_checked >= 2) break;
+        }
+        std::printf("%s\n  Q2_0 tensors spot-checked: %d\n  MXFP4 tensors spot-checked: %d\n"
+                    "  symbolic invariant violations: %d -> %s\n",
+                    argv[1], checked, mxfp4_checked, bad, bad ? "FAIL" : "PASS");
         return bad ? 1 : 0;
     } catch (const std::exception& e) {
         std::printf("ERROR: %s\n", e.what());

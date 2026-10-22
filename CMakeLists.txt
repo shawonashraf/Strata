@@ -265,6 +265,10 @@ add_executable(strata-dequant src/artifact/dequant.cpp)
 target_link_libraries(strata-dequant PRIVATE strata_artifact)
 # this file is now nothing but the CLI entry point, and its inherited guard spells that as a "selftest"
 target_compile_definitions(strata-dequant PRIVATE STRATA_DEQUANT_SELFTEST)
+# the DeepSeek-V4 CPU reference (docs/DEEPSEEK_V4_PLAN.md stage 2): one token at a time, fp32, straight off
+# the GGUF mmap.  Reader-only dependencies, so it builds wherever the reader does - no GPU, no backend.
+add_executable(strata-dsv4ref src/deepseekv4/dsv4ref.cpp src/deepseekv4/dsv4_main.cpp)
+target_link_libraries(strata-dsv4ref PRIVATE strata_artifact)
 if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
@@ -284,6 +288,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(model_family_test tests/core/model_family_test.cpp)
   target_link_libraries(model_family_test PRIVATE strata_artifact)
   add_test(NAME model_family_test COMMAND model_family_test)
+  # the DeepSeek-V4 CPU reference forward on a tiny whole synthetic model: the whole pass (schedule, mHC
+  # sinkhorn, CSA pooling + indexer, HCA pooling, hash layers) runs, stays finite, and is deterministic
+  # (no model download, no GPU; docs/DEEPSEEK_V4_PLAN.md stage 2)
+  add_executable(dsv4ref_test tests/core/dsv4ref_test.cpp src/deepseekv4/dsv4ref.cpp)
+  target_link_libraries(dsv4ref_test PRIVATE strata_artifact)
+  add_test(NAME dsv4ref_test COMMAND dsv4ref_test)
   # how --batch cuts a prompt read into pieces (a layer split with no slot decoding must still reach a BYIELD)
   add_executable(batch_read_test tests/program/batch_read_test.cpp)
   target_include_directories(batch_read_test PRIVATE include)

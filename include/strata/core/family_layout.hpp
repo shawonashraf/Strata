@@ -306,8 +306,8 @@ struct Dsv4Geometry {
     int64_t n_head = 0, head_dim = 0;     ///< head_count_kv is 1 and key_length == value_length (guard-checked)
     int64_t q_lora_rank = 0;              ///< attention.q_lora_rank: attn_q_a / attn_q_b (and the indexer's q_b)
     int64_t o_groups = 0, o_lora_rank = 0; ///< attention.output_group_count / output_lora_rank
-    int64_t n_rot = 0;                    ///< rope.dimension_count: the rotated slice, and the indexer's one shared
-                                          ///  key width (both 64 in every published file)
+    int64_t n_rot = 0;                    ///< rope.dimension_count: the rotated slice - RoPE turns the last 64 dims
+                                          ///  of every 512-wide head (nope 448 + rope 64, the V3-style split)
     int64_t sliding_window = 0;           ///< attention.sliding_window (128)
     int64_t n_expert = 0, n_expert_used = 0, n_ff = 0;   ///< one shared expert at width n_ff (guard-checked)
     int64_t idx_q_heads = 0, idx_key_dim = 0, idx_top_k = 0;   ///< attention.indexer.* (64 x 128, top 512)
@@ -440,10 +440,11 @@ inline std::vector<TensorWant> dsv4_layer_tensors(const Dsv4Geometry& g, int64_t
     add("attn_compressor_norm.weight", {g.head_dim});
     add("attn_compressor_ape.weight", {cw, (kind == Dsv4LayerKind::Csa) ? g.csa_block : g.hca_block});
     if (kind == Dsv4LayerKind::Csa) {
-        // the Lightning indexer: QL low-rank Q over idx_q_heads x idx_key_dim, one shared key (width n_rot)
-        // per token, and its own CSA-shaped pool over 2 x idx_key_dim entries
+        // the Lightning indexer: QL low-rank Q over idx_q_heads x idx_key_dim, one score weight per head from
+        // one shared projection (idx_q_heads wide - it equals rope.dimension_count in every published file, but
+        // it IS the head count: inference/kernel.py's weights_proj(dim, n_heads)), and its own CSA-shaped pool
         add("indexer.attn_q_b.weight", {QL, g.idx_q_heads * g.idx_key_dim});
-        add("indexer.proj.weight", {N, g.n_rot});
+        add("indexer.proj.weight", {N, g.idx_q_heads});
         add("indexer_compressor_kv.weight", {N, 2 * g.idx_key_dim});
         add("indexer_compressor_gate.weight", {N, 2 * g.idx_key_dim});
         add("indexer_compressor_norm.weight", {g.idx_key_dim});

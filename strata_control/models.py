@@ -369,6 +369,11 @@ def problem_words(issues: list, limit: int = 3) -> str:
 
 UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
                           "Add it as a Custom model API (llama-server) instead.")
+# a family Strata recognises and reads but does not run yet gets the named sentence instead of the generic one
+ARCH_NOTES = {
+    "deepseek4": "This is a DeepSeek-V4 model. Strata recognises it and can read its files, but no engine runs "
+                 "them yet; add it as a Custom model API (llama-server) instead.",
+}
 # The picture readers Strata ships a pinned copy of (setup downloads and checks one of these next to the model).
 # (name, size in bytes) as setup.py pins them: setup would delete a file of that name with another size, so only an exact
 # match is called "the official one".

@@ -222,6 +222,10 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
         elems = 1;
         bytes = 1;
         return true;
+    case 26:   // I32: the deepseek4 hash layers' frozen ffn_gate_tid2eid lookup (artifact/§deepseek4)
+        elems = 1;
+        bytes = 4;
+        return true;
     case 40:   // NVFP4: 64 values = 4 UE4M3 sub-block scales + 32 bytes of E2M1 codes
         elems = 64;
         bytes = 36;
@@ -645,6 +649,70 @@ inline std::string check_architecture_qwen35moe(const GgufFile& g) {
     return {};
 }
 
+// ---- DeepSeek-V4's guard (deepseek4, docs/DEEPSEEK_V4_PLAN.md stage 1).  The engine does not run the family yet;
+// this guard only proves the file declares a shape whose geometry (core::Dsv4Geometry) and layout tables are the
+// published ones, so "recognised, not runnable yet" is a statement about this file, not a guess.  The engine's
+// guard then refuses it with model_family_not_supported until the dsv4 path lands.
+
+/// DeepSeek-V4's guard: every key the geometry is read from present and positive; the invariants of the
+/// architecture (one shared K=V latent, one shared expert, the hash layers a real prefix of the trunk); and a
+/// per-layer attention schedule (attention.compress_ratios) with a kind for every trunk layer and at most two
+/// pooling factors (the 4x CSA and the 128x HCA pools).  The array may run past the trunk - GA carries three
+/// extra sliding rows for its DSpark speculative layers, which ship as a separate file.
+inline std::string check_architecture_deepseek4(const GgufFile& g) {
+    static const char* const keys[] = {
+        "deepseek4.block_count", "deepseek4.embedding_length", "deepseek4.attention.head_count",
+        "deepseek4.attention.head_count_kv", "deepseek4.attention.key_length", "deepseek4.attention.value_length",
+        "deepseek4.attention.q_lora_rank", "deepseek4.attention.output_group_count",
+        "deepseek4.attention.output_lora_rank", "deepseek4.attention.sliding_window", "deepseek4.rope.dimension_count",
+        "deepseek4.expert_count", "deepseek4.expert_used_count", "deepseek4.expert_feed_forward_length",
+        "deepseek4.expert_shared_count", "deepseek4.attention.indexer.head_count",
+        "deepseek4.attention.indexer.key_length", "deepseek4.attention.indexer.top_k",
+        "deepseek4.hyper_connection.count", "deepseek4.hyper_connection.sinkhorn_iterations",
+        "deepseek4.hash_layer_count",
+    };
+    for (const char* k : keys) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+        if (v->u == 0) return std::string(k) + " is zero";
+    }
+    if (g.get("deepseek4.expert_used_count")->u > g.get("deepseek4.expert_count")->u)
+        return "deepseek4.expert_used_count is larger than deepseek4.expert_count";
+    if (g.get("deepseek4.expert_shared_count")->u != 1)
+        return "deepseek4.expert_shared_count is not 1 (V4 ships exactly one shared expert per layer)";
+    if (g.get("deepseek4.attention.head_count_kv")->u != 1)
+        return "deepseek4.attention.head_count_kv is not 1 (V4's attention shares one K=V latent across its heads)";
+    if (g.get("deepseek4.attention.key_length")->u != g.get("deepseek4.attention.value_length")->u)
+        return "deepseek4.attention.key_length and value_length differ (one shared K=V latent serves both)";
+    if (g.get("deepseek4.hash_layer_count")->u >= g.get("deepseek4.block_count")->u)
+        return "deepseek4.hash_layer_count is not smaller than deepseek4.block_count";
+    const MetaValue* r = g.get("deepseek4.attention.compress_ratios");
+    if (!r) return "missing deepseek4.attention.compress_ratios (the per-layer attention schedule)";
+    if (r->type != MetaType::ARRAY || r->count < g.get("deepseek4.block_count")->u)
+        return "deepseek4.attention.compress_ratios has fewer entries than deepseek4.block_count";
+    uint64_t pool_small = 0, pool_big = 0;   // the pooling factors the schedule uses (4 = CSA, 128 = HCA)
+    for (uint64_t l = 0; l < r->count; ++l) {
+        const MetaValue& e = r->items[(size_t) l];
+        if (!e.is_num())
+            return "deepseek4.attention.compress_ratios[" + std::to_string(l) + "] is not a number";
+        const uint64_t v = e.u;
+        if (l >= g.get("deepseek4.block_count")->u && v != 0)
+            return "deepseek4.attention.compress_ratios[" + std::to_string(l) +
+                   "] is not 0: past the trunk the schedule's rows (the speculative DSpark layers, shipped as a"
+                   " separate file) must be sliding";
+        if (v == 0 || v == pool_small || v == pool_big) continue;
+        if (!pool_small) pool_small = v;
+        else if (!pool_big) { if (v < pool_small) { pool_big = pool_small; pool_small = v; } else pool_big = v; }
+        else
+            return "deepseek4.attention.compress_ratios[" + std::to_string(l) + "] = " + std::to_string(v) +
+                   ", a third pooling factor: the schedule mixes more than a compressed (CSA) and a heavily"
+                   " compressed (HCA) pool";
+    }
+    if (!pool_small) return "deepseek4.attention.compress_ratios has no compressed layer (every entry is 0)";
+    return {};
+}
+
 // ---- the model's geometry from its metadata, and the architecture guard (P1.S2).  The engine runs ONE
 // architecture, qwen4exp.  Its dimensions are read from the file (llama.cpp's key names under the arch prefix)
 // and then checked against the shape the kernels are compiled for (core/geometry.hpp), so a file of another
@@ -832,6 +900,7 @@ inline std::string check_architecture(const GgufFile& f) {
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::DeepseekV4) return check_architecture_deepseek4(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);

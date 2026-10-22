@@ -47,6 +47,7 @@ BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "IQ2_XXS": (256, 66), "IQ2_XS": (256, 74), "IQ3_XXS": (256, 98), "IQ1_S": (256, 50),
     "IQ4_NL": (32, 18), "IQ3_S": (256, 110), "IQ2_S": (256, 82), "IQ4_XS": (256, 136),
     "IQ1_M": (256, 56), "Q2_0": (64, 18), "MXFP4": (32, 17), "NVFP4": (64, 36),
+    "I32": (1, 4),   # the deepseek4 hash layers' ffn_gate_tid2eid lookup table
     # fp16 scale + trellis stream (32 steps x 8 / 6 / 7 bits); PTQ1_0: 26 B of trits + fp16 scale
     "TQ2_T": (128, 34), "TQK6": (128, 26), "TQK7": (128, 30), "PTQ1_0": (128, 28),
 }
